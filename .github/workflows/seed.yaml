@@ -1,0 +1,96 @@
+name: Seed MemoryDB Configuration
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to seed'
+        required: true
+        type: choice
+        options:
+          - stg
+          - prd
+  push:
+    branches: ["deploy-workflows"]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    env:
+      ROLE_FOR_OIDC: "${{ secrets.ROLE_FOR_OIDC }}"
+      ROLE_TO_ASSUME: "${{ secrets.ROLE_TO_ASSUME }}"
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER_STG }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE_STG }}
+      SEED_TASK_DEFINITION: 'oif-solver-stg-seed'
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Set up AWS credentials
+        uses: ./.github/actions/oidc
+        with:
+          role-for-oidc: ${{ env.ROLE_FOR_OIDC }}
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+
+      - name: Fetch network configuration from ECS service
+        id: network
+        run: |
+          NETWORK_CONFIG=$(aws ecs describe-services \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'services[0].networkConfiguration.awsvpcConfiguration' \
+            --output json)
+
+          SUBNETS=$(echo "$NETWORK_CONFIG" | jq -r '.subnets | join(",")')
+          SECURITY_GROUPS=$(echo "$NETWORK_CONFIG" | jq -r '.securityGroups | join(",")')
+
+          echo "subnets=${SUBNETS}" >> "$GITHUB_OUTPUT"
+          echo "security_groups=${SECURITY_GROUPS}" >> "$GITHUB_OUTPUT"
+
+      - name: Run seed task
+        run: |
+          echo "Running seed task for ${{ inputs.environment }}..."
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --task-definition "${{ env.SEED_TASK_DEFINITION }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.security_groups }}],assignPublicIp=DISABLED}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          echo "Seed task started: ${TASK_ARN}"
+
+          echo "Waiting for seed task to finish..."
+          aws ecs wait tasks-stopped \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${TASK_ARN}" \
+            --region "${{ env.AWS_REGION }}"
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "${TASK_ARN}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+
+          echo "Seed task exit code: ${EXIT_CODE}"
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "Seed task failed!"
+            exit 1
+          fi
+          echo "Seed task completed successfully."
