@@ -11,7 +11,7 @@ on:
           - stg
           - prd
   push:
-    branches: ["deploy-workflows"]
+    branches: ["deploy-workflowsa"]
 
 permissions:
   contents: read

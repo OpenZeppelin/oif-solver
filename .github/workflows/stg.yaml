@@ -1,8 +1,8 @@
 name: Stg Build and Deploy
 
 on:
-  # push:
-  #   branches: [deploy-workflows]
+  push:
+    branches: [deploy-workflows]
   workflow_dispatch:
     inputs:
       branch:
