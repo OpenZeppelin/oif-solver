@@ -93,4 +93,5 @@ jobs:
             echo "Seed task failed!"
             exit 1
           fi
+
           echo "Seed task completed successfully"
