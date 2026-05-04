@@ -14,12 +14,8 @@ on:
         required: true
         type: string
 
-  push:
-    branches: [deploy-workflows]
-
 env:
-  # VERSION: ${{ github.event.inputs.version }}
-  VERSION: latest
+  VERSION: ${{ github.event.inputs.version }}
 
 permissions:
   contents: read
@@ -75,6 +71,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
