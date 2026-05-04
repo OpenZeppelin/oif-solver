@@ -2,7 +2,7 @@ name: Stg Build and Deploy
 
 on:
   push:
-    branches: [deploy-workflowsq]
+    branches: [main]
   workflow_dispatch:
     inputs:
       branch:
@@ -10,13 +10,9 @@ on:
         required: true
         default: 'main'
         type: string
-      version:
-        description: "Tag version (e.g. latest or 1.0.0-rc.1)"
-        required: true
-        type: string
-        default: "latest"
+
 env:
-  VERSION: latest
+  VERSION: ${{ github.sha }}
 
 permissions:
   contents: read
@@ -71,6 +67,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |

@@ -10,8 +10,6 @@ on:
         options:
           - stg
           - prd
-  push:
-    branches: ["deploy-workflows"]
 
 permissions:
   contents: read
@@ -23,9 +21,9 @@ jobs:
     env:
       ROLE_FOR_OIDC: "${{ secrets.ROLE_FOR_OIDC }}"
       ROLE_TO_ASSUME: "${{ secrets.ROLE_TO_ASSUME }}"
-      ECS_CLUSTER: ${{ vars.ECS_CLUSTER_STG }}
-      ECS_SERVICE: ${{ vars.ECS_SERVICE_STG }}
-      SEED_TASK_DEFINITION: 'oif-solver-stg-seed'
+      ECS_CLUSTER: ${{ inputs.environment == 'prd' && vars.ECS_CLUSTER_PRD || vars.ECS_CLUSTER_STG }}
+      ECS_SERVICE: ${{ inputs.environment == 'prd' && vars.ECS_SERVICE_PRD || vars.ECS_SERVICE_STG }}
+      SEED_TASK_DEFINITION: ${{ inputs.environment == 'prd' && 'oif-solver-seed' || 'oif-solver-stg-seed' }}
       AWS_REGION: ${{ vars.AWS_REGION }}
     permissions:
       contents: read
@@ -93,5 +91,4 @@ jobs:
             echo "Seed task failed!"
             exit 1
           fi
-
-          echo "Seed task completed successfully"
+          echo "Seed task completed successfully."
