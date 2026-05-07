@@ -29,7 +29,7 @@ jobs:
       security-events: write
 
     env:
-      REGISTRY: "${{ secrets.REGISTRY }}"
+      REGISTRY: "${{ vars.IMAGE_REGISTRY }}"
       IMAGE_NAME: ${{ vars.IMAGE_NAME_STG }}
       ROLE_FOR_OIDC: "${{ secrets.ROLE_FOR_OIDC }}"
       ROLE_TO_ASSUME: "${{ secrets.ROLE_TO_ASSUME }}"
