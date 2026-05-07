@@ -9,13 +9,8 @@ on:
         default: 'main'
         type: string
 
-      version:
-        description: "Tag version (e.g. 1.0.0)"
-        required: true
-        type: string
-
 env:
-  VERSION: ${{ github.event.inputs.version }}
+  VERSION: ${{ github.sha }}
 
 permissions:
   contents: read
@@ -33,7 +28,7 @@ jobs:
       security-events: write
 
     env:
-      REGISTRY: "${{ secrets.REGISTRY }}"
+      REGISTRY: "${{ vars.IMAGE_REGISTRY }}"
       IMAGE_NAME: ${{ vars.IMAGE_NAME_PRD }}
       ROLE_FOR_OIDC: "${{ secrets.ROLE_FOR_OIDC }}"
       ROLE_TO_ASSUME: "${{ secrets.ROLE_TO_ASSUME }}"
@@ -60,8 +55,9 @@ jobs:
           role-for-oidc: ${{ env.ROLE_FOR_OIDC }}
           role-to-assume: ${{ env.ROLE_TO_ASSUME }}
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+      - name: Login to Amazon ECR Public
+        run: |
+          aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
 
       - name: Build and push Docker image
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.10.0
