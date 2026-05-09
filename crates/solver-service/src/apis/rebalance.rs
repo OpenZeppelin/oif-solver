@@ -798,7 +798,7 @@ mod tests {
 		OperatorRebalancePairConfig, OperatorRpcEndpoint, OperatorSettlementConfig,
 		OperatorSettlementType, OperatorSolverConfig, OperatorWithdrawalsConfig, RebalancePairSide,
 	};
-	use std::collections::HashMap;
+	use std::collections::{HashMap, HashSet};
 	use std::str::FromStr;
 	use std::sync::{Arc, Mutex};
 	use tokio::sync::RwLock;
@@ -847,30 +847,8 @@ mod tests {
 
 	#[async_trait]
 	impl AccountInterface for DummyAccount {
-		fn config_schema(&self) -> Box<dyn solver_types::ConfigSchema> {
-			Box::new(solver_account::implementations::local::LocalWalletSchema)
-		}
-
 		async fn address(&self) -> Result<solver_types::Address, solver_account::AccountError> {
 			Ok(self.address.clone())
-		}
-
-		async fn sign_transaction(
-			&self,
-			_tx: &solver_types::Transaction,
-		) -> Result<solver_types::Signature, solver_account::AccountError> {
-			Err(solver_account::AccountError::Implementation(
-				"not needed in rebalance tests".to_string(),
-			))
-		}
-
-		async fn sign_message(
-			&self,
-			_message: &[u8],
-		) -> Result<solver_types::Signature, solver_account::AccountError> {
-			Err(solver_account::AccountError::Implementation(
-				"not needed in rebalance tests".to_string(),
-			))
 		}
 
 		fn signer(&self) -> AccountSigner {
@@ -991,6 +969,8 @@ mod tests {
 				resource_lock: OperatorGasFlowUnits::default(),
 				permit2_escrow: OperatorGasFlowUnits::default(),
 				eip3009_escrow: OperatorGasFlowUnits::default(),
+				live_fill_estimate_enabled: true,
+				live_post_fill_estimate_chain_ids: HashSet::new(),
 			},
 			pricing: OperatorPricingConfig {
 				primary: "coingecko".to_string(),
@@ -1011,7 +991,10 @@ mod tests {
 				domain: "test.example.com".to_string(),
 				chain_id: 1,
 				nonce_ttl_seconds: 300,
-				admin_addresses: vec![admin_address],
+				whitelist: vec![solver_types::AdminWhitelistEntry {
+					address: admin_address,
+					role: solver_types::AdminRole::Admin,
+				}],
 				withdrawals: OperatorWithdrawalsConfig { enabled: false },
 			},
 			auth_enabled: false,
@@ -1046,6 +1029,7 @@ mod tests {
 					"vault_addresses": { "1": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
 				})),
 			}),
+			fee_policy: None,
 		}
 	}
 
@@ -1069,7 +1053,10 @@ mod tests {
 				domain: "test.example.com".to_string(),
 				chain_id: Some(1),
 				nonce_ttl_seconds: 300,
-				admin_addresses: vec![alloy_address("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")],
+				whitelist: vec![solver_types::AdminWhitelistEntry {
+					address: alloy_address("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
+					role: solver_types::AdminRole::Admin,
+				}],
 			},
 			1,
 		);

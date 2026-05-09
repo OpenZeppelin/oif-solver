@@ -462,6 +462,9 @@ Token arrays may be empty at boot and can be populated later via admin APIs.
 ```
 
 Optional fee overrides can be set at the top level: `min_profitability_pct` (decimal string), `gas_buffer_bps`, `commission_bps`, and `rate_buffer_bps` (basis points).
+
+For per-chain EIP-1559 fee tuning (priority floor, fallback, percentile speed, gas-price cap), see [docs/fee-policy.md](docs/fee-policy.md). The solver auto-generates sensible defaults — you only need a `fee_policy` block in your bootstrap config if you want to override them.
+
 Optional network types are: `parent`, `hub`, and `new`.
 
 For non-seeded networks, the following fields are required per network:
@@ -855,11 +858,12 @@ sequenceDiagram
 #### Health
 
 - **GET `/health`** - Health check endpoint
-  - Returns solver health status including Redis connectivity and persistence info
-  - Response:
+  - Returns solver health status including storage readiness, Redis persistence info, and startup readiness.
+  - **Steady-state response (fully operational):**
     ```json
     {
       "status": "healthy",
+      "storage": { "backend": "Redis", "ready": true, "checks": [], "details": {} },
       "redis": {
         "connected": true,
         "persistence_enabled": true,
@@ -867,34 +871,63 @@ sequenceDiagram
         "aof_enabled": false
       },
       "solver_id": "my-solver",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "startup": { "approvals_ready": true }
     }
     ```
-  - Status codes: `200 OK` (healthy), `503 Service Unavailable` (unhealthy)
+  - **While the signer needs native gas to complete startup approvals**, the API stays up and HTTP `200 OK` is returned, but `startup.approvals_ready` is `false` and `blocked_signers` lists the addresses that need funding. The solver retries approvals every 30 seconds and the field flips to `true` automatically once they succeed.
+    ```json
+    {
+      "status": "healthy",
+      "storage": { "backend": "Redis", "ready": true, "checks": [], "details": {} },
+      "redis": { "connected": true, "persistence_enabled": true, "rdb_enabled": true, "aof_enabled": false },
+      "solver_id": "my-solver",
+      "version": "0.1.0",
+      "startup": {
+        "approvals_ready": false,
+        "reason": "waiting_for_native_gas",
+        "blocked_signers": [
+          { "chain_id": 1, "signer": "0x3c0189...", "balance_wei": "0" }
+        ]
+      }
+    }
+    ```
+  - Frontends should branch on `startup.approvals_ready`, not on the HTTP status, to surface a "fund this address" prompt.
+  - Status codes: `200 OK` when storage is ready (regardless of startup readiness), `503 Service Unavailable` when storage or another core dependency is not ready.
 
 #### Admin API (Wallet-Based Authentication)
 
 The admin API enables authorized wallet addresses to perform administrative operations using EIP-712 signed messages. This provides secure, decentralized admin access without shared secrets.
 
-**Setup:** Configure admin addresses in your seed overrides JSON:
+**Setup:** Configure typed admin whitelist entries in your seed overrides JSON:
 
 ```json
 {
   "admin": {
     "enabled": true,
     "domain": "localhost",
-    "admin_addresses": ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"]
+    "whitelist": [
+      {
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "role": "admin"
+      },
+      {
+        "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "role": "read-only"
+      }
+    ]
   }
 }
 ```
 
-`admin_addresses` is a list. Any signer in this list is accepted for SIWE and EIP-712 admin auth checks.
+`role: "admin"` receives `admin-all` and can sign EIP-712 transactions. `role: "read-only"` receives `admin-read` through SIWE and can call admin `GET` endpoints only. The legacy `admin_addresses` list is still accepted as input and is normalized to full admin entries.
 
 **Endpoints:**
 
 - **GET `/api/v1/admin/balances`** - Get solver balances by chain and token (protected, read-only)
 - **GET `/api/v1/admin/config`** - Get current solver configuration snapshot (protected, read-only)
-- **POST `/api/v1/admin/nonce`** (or GET alias) - Get a nonce for signing admin actions (protected)
+- **GET `/api/v1/admin/nonce`** - Get a nonce for signing admin actions (protected, read-only)
+- **POST `/api/v1/admin/nonce`** - Get a nonce for signing admin actions (protected, admin-all)
   - Response:
     ```json
     {
@@ -932,8 +965,8 @@ The admin API enables authorized wallet addresses to perform administrative oper
 - **DELETE `/api/v1/admin/tokens`** - Remove a token from a network (protected)
 - **POST `/api/v1/admin/tokens/approve`** - Approve token allowance for settlements (protected)
 - **POST `/api/v1/admin/withdrawals`** - Perform an admin withdrawal (protected)
-- **GET `/api/v1/admin/whitelist`** - List current admins (protected)
-- **POST `/api/v1/admin/whitelist`** - Add a new admin (protected)
+- **GET `/api/v1/admin/whitelist`** - List typed admin whitelist entries (protected, read-only)
+- **POST `/api/v1/admin/whitelist`** - Set a wallet role to `admin` or `read-only` (protected, EIP-712 signed)
 - **DELETE `/api/v1/admin/whitelist`** - Remove an admin (protected)
 - **GET `/api/v1/admin/fees`** - Get fee configuration (protected)
 - **PUT `/api/v1/admin/fees`** - Update fee configuration (protected, EIP-712 signed)
@@ -942,13 +975,13 @@ The admin API enables authorized wallet addresses to perform administrative oper
 
 **Admin Action Flow:**
 
-1. Call `POST /api/v1/admin/nonce` (or `GET` alias) to get a fresh nonce
+1. Call `POST /api/v1/admin/nonce` (or `GET` if your token is read-only) to get a fresh nonce
 2. Call `GET /api/v1/admin/types` to get EIP-712 type definitions
 3. Construct the typed data with the nonce and a deadline
 4. Sign with your admin wallet (EIP-712)
 5. Submit the signed action to the appropriate endpoint
 
-**Note:** If API auth is enabled (`auth_enabled = true` in seed overrides, mapped to runtime `auth.enabled`), protected admin endpoints also require a JWT with `AdminAll` scope. Use SIWE (`POST /api/v1/auth/siwe/nonce` + `POST /api/v1/auth/siwe/verify`) to obtain it.
+**Note:** If API auth is enabled (`auth_enabled = true` in seed overrides, mapped to runtime `auth.enabled`), protected admin endpoints require a JWT with `admin-read` for `GET` routes and `admin-all` for mutating routes. Use SIWE (`POST /api/v1/auth/siwe/nonce` + `POST /api/v1/auth/siwe/verify`) to obtain it.
 **Note:** `/api/v1/auth/siwe/nonce` is dedicated to SIWE login. `/api/v1/admin/nonce` is dedicated to EIP-712 admin action signing.
 **Note:** `POST /api/v1/auth/register` never issues `admin-all` and is disabled by default unless `AUTH_PUBLIC_REGISTER_ENABLED=true`.
 **Note:** Admin withdrawals require `admin.withdrawals.enabled = true` in config.

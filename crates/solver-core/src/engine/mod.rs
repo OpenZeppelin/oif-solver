@@ -8,9 +8,15 @@ pub mod context;
 pub mod cost_profit;
 pub mod event_bus;
 pub mod lifecycle;
+pub mod post_fill_overrides;
+pub mod startup_readiness;
 pub mod token_manager;
 
-use self::{cost_profit::CostProfitService, token_manager::TokenManager};
+use self::{
+	cost_profit::CostProfitService,
+	startup_readiness::{SharedStartupReadiness, StartupReadiness},
+	token_manager::TokenManager,
+};
 use crate::handlers::{IntentHandler, OrderHandler, SettlementHandler, TransactionHandler};
 use crate::recovery::RecoveryService;
 use crate::state::OrderStateMachine;
@@ -97,6 +103,11 @@ pub struct SolverEngine {
 		Arc<tokio::sync::RwLock<solver_bridge::monitor::RebalanceMonitorStatus>>,
 	/// The solver's Ethereum address.
 	pub(crate) solver_address: solver_types::Address,
+	/// Public-facing startup readiness state. Defaults to `ready()`. The
+	/// builder writes a non-ready value here when startup approvals are
+	/// blocked on native gas; the retry loop flips it back when the next
+	/// approval pass succeeds.
+	pub(crate) startup_readiness: SharedStartupReadiness,
 }
 
 /// Number of orders to batch together for claim operations.
@@ -104,6 +115,25 @@ pub struct SolverEngine {
 /// This constant defines how many orders are batched together when
 /// submitting claim transactions to reduce gas costs.
 static CLAIM_BATCH: usize = 1;
+
+/// Returns true when the settlement error represents a transient post-fill
+/// failure — one that may succeed on a later attempt without any code or
+/// order changes. Marking such orders as `Failed` would lock in a real loss
+/// because the Fill has already settled on chain; only the claim half
+/// remains, and it just needs another attempt with a healthier signer.
+///
+/// Matches on the typed `SettlementError` variant rather than substring on
+/// a formatted message — drift in any error's `Display` impl would silently
+/// flip transient-recovery behavior to permanent-failure.
+///
+/// Currently identifies:
+/// - `InsufficientNativeGas` — signer balance changes outside the solver's view.
+fn is_transient_postfill_error(error: &crate::handlers::settlement::SettlementError) -> bool {
+	matches!(
+		error,
+		crate::handlers::settlement::SettlementError::InsufficientNativeGas(_)
+	)
+}
 
 impl SolverEngine {
 	/// Creates a new solver engine with the given services.
@@ -216,6 +246,7 @@ impl SolverEngine {
 			rebalance_monitor_status: Arc::new(tokio::sync::RwLock::new(
 				solver_bridge::monitor::RebalanceMonitorStatus::default(),
 			)),
+			startup_readiness: Arc::new(RwLock::new(StartupReadiness::ready())),
 		}
 	}
 
@@ -473,8 +504,26 @@ impl SolverEngine {
 							self.spawn_handler(&transaction_semaphore, move |engine| async move {
 								let order_id_clone = order_id.clone();
 								if let Err(e) = engine.settlement_handler.handle_post_fill_ready(order_id).await {
+									// Discriminate transient errors from permanent ones via
+									// the typed SettlementError variant — string-matching on
+									// a formatted message is brittle to Display drift.
+									// `InsufficientNativeGas` is the textbook transient: balance
+									// changes outside the solver's view, and marking Failed here
+									// would lock in a real loss (Fill already settled on chain;
+									// we just need to top up to claim). Leave the order in
+									// `Executed` so the next restart's recovery retries.
+									if is_transient_postfill_error(&e) {
+										let error_msg = format!("Failed to handle PostFillReady: {e}");
+										tracing::warn!(
+											order_id = %order_id_clone,
+											error = %error_msg,
+											"PostFill failed with a transient error; leaving order \
+											in Executed for the next recovery cycle to retry"
+										);
+										return Err(EngineError::Service(error_msg));
+									}
 									let error_msg = format!("Failed to handle PostFillReady: {e}");
-									// Attempt to mark order as failed
+									// Permanent failure → mark order Failed.
 									if let Err(state_err) = engine.state_machine
 										.transition_order_status(&order_id_clone, solver_types::OrderStatus::Failed(solver_types::TransactionType::PostFill, error_msg.clone()))
 										.await
@@ -666,6 +715,25 @@ impl SolverEngine {
 	/// Returns the solver address as a hex string with 0x prefix.
 	pub fn solver_address_hex(&self) -> String {
 		format!("0x{}", hex::encode(&self.solver_address.0))
+	}
+
+	/// Returns a reference to the solver's primary account address.
+	pub fn solver_address(&self) -> &solver_types::Address {
+		&self.solver_address
+	}
+
+	/// Returns a snapshot of the current startup readiness state. Cheap —
+	/// takes a read lock, clones, and releases. Safe to call from hot
+	/// paths like the health endpoint.
+	pub async fn startup_readiness(&self) -> StartupReadiness {
+		self.startup_readiness.read().await.clone()
+	}
+
+	/// Returns the shared handle for the startup readiness state. Used by
+	/// the builder to seed the initial value and hand a clone to the
+	/// background approval retry loop.
+	pub fn startup_readiness_handle(&self) -> SharedStartupReadiness {
+		Arc::clone(&self.startup_readiness)
 	}
 
 	/// Helper method to spawn handler tasks with semaphore-based concurrency control.
@@ -1001,5 +1069,94 @@ mod tests {
 			handler_error.to_string(),
 			"Handler error: test handler error"
 		);
+	}
+
+	#[tokio::test]
+	async fn engine_startup_readiness_defaults_to_ready() {
+		let (
+			dynamic_config,
+			config,
+			storage,
+			account,
+			solver_address,
+			delivery,
+			discovery,
+			order,
+			settlement,
+			pricing,
+			event_bus,
+			token_manager,
+		) = create_mock_services().await;
+
+		let engine = SolverEngine::new(
+			dynamic_config,
+			config,
+			storage,
+			account,
+			solver_address,
+			delivery,
+			discovery,
+			order,
+			settlement,
+			pricing,
+			event_bus,
+			token_manager,
+			None,
+		);
+
+		let snapshot = engine.startup_readiness().await;
+
+		assert!(snapshot.approvals_ready);
+		assert!(snapshot.reason.is_none());
+		assert!(snapshot.blocked_signers.is_empty());
+	}
+
+	#[tokio::test]
+	async fn engine_startup_readiness_handle_propagates_writes_to_getter() {
+		use crate::engine::startup_readiness::{BlockedSigner, StartupReadiness};
+
+		let (
+			dynamic_config,
+			config,
+			storage,
+			account,
+			solver_address,
+			delivery,
+			discovery,
+			order,
+			settlement,
+			pricing,
+			event_bus,
+			token_manager,
+		) = create_mock_services().await;
+
+		let engine = SolverEngine::new(
+			dynamic_config,
+			config,
+			storage,
+			account,
+			solver_address,
+			delivery,
+			discovery,
+			order,
+			settlement,
+			pricing,
+			event_bus,
+			token_manager,
+			None,
+		);
+
+		let handle = engine.startup_readiness_handle();
+		*handle.write().await = StartupReadiness::waiting_for_native_gas(vec![BlockedSigner {
+			chain_id: 1,
+			signer: "0xabc".to_string(),
+			balance_wei: "0".to_string(),
+		}]);
+
+		let snapshot = engine.startup_readiness().await;
+		assert!(!snapshot.approvals_ready);
+		assert_eq!(snapshot.reason.as_deref(), Some("waiting_for_native_gas"));
+		assert_eq!(snapshot.blocked_signers.len(), 1);
+		assert_eq!(snapshot.blocked_signers[0].chain_id, 1);
 	}
 }

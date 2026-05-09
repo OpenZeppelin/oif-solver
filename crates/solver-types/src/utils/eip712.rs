@@ -743,7 +743,7 @@ pub fn reconstruct_eip3009_digest(
 /// - RemoveToken
 /// - Withdraw
 /// - UpdateNetwork
-/// - AddAdmin
+/// - SetAdminRole
 /// - RemoveAdmin
 /// - UpdateFeeConfig
 /// - UpdateGasConfig
@@ -793,8 +793,9 @@ pub fn admin_eip712_types() -> serde_json::Value {
 			{"name": "nonce", "type": "uint256"},
 			{"name": "deadline", "type": "uint256"}
 		],
-		"AddAdmin": [
-			{"name": "newAdmin", "type": "address"},
+		"SetAdminRole": [
+			{"name": "account", "type": "address"},
+			{"name": "role", "type": "string"},
 			{"name": "nonce", "type": "uint256"},
 			{"name": "deadline", "type": "uint256"}
 		],
@@ -814,13 +815,21 @@ pub fn admin_eip712_types() -> serde_json::Value {
 		"UpdateGasConfig": [
 			{"name": "resourceLockOpen", "type": "uint64"},
 			{"name": "resourceLockFill", "type": "uint64"},
+			{"name": "resourceLockPostFill", "type": "uint64"},
+			{"name": "resourceLockPreClaim", "type": "uint64"},
 			{"name": "resourceLockClaim", "type": "uint64"},
 			{"name": "permit2EscrowOpen", "type": "uint64"},
 			{"name": "permit2EscrowFill", "type": "uint64"},
+			{"name": "permit2EscrowPostFill", "type": "uint64"},
+			{"name": "permit2EscrowPreClaim", "type": "uint64"},
 			{"name": "permit2EscrowClaim", "type": "uint64"},
 			{"name": "eip3009EscrowOpen", "type": "uint64"},
 			{"name": "eip3009EscrowFill", "type": "uint64"},
+			{"name": "eip3009EscrowPostFill", "type": "uint64"},
+			{"name": "eip3009EscrowPreClaim", "type": "uint64"},
 			{"name": "eip3009EscrowClaim", "type": "uint64"},
+			{"name": "livePostFillEstimateChainIds", "type": "uint64[]"},
+			{"name": "liveFillEstimateEnabled", "type": "bool"},
 			{"name": "nonce", "type": "uint256"},
 			{"name": "deadline", "type": "uint256"}
 		],
@@ -1868,7 +1877,7 @@ mod tests {
 		assert!(obj.contains_key("RemoveToken"));
 		assert!(obj.contains_key("Withdraw"));
 		assert!(obj.contains_key("UpdateNetwork"));
-		assert!(obj.contains_key("AddAdmin"));
+		assert!(obj.contains_key("SetAdminRole"));
 		assert!(obj.contains_key("RemoveAdmin"));
 		assert!(obj.contains_key("UpdateFeeConfig"));
 		assert!(obj.contains_key("UpdateGasConfig"));
@@ -1940,6 +1949,31 @@ mod tests {
 	}
 
 	#[test]
+	fn test_admin_eip712_types_set_admin_role_fields() {
+		let types = admin_eip712_types();
+		let set_admin_role = types["SetAdminRole"]
+			.as_array()
+			.expect("should be an array");
+
+		assert_eq!(set_admin_role.len(), 4);
+
+		let fields: Vec<(&str, &str)> = set_admin_role
+			.iter()
+			.map(|field| {
+				(
+					field["name"].as_str().unwrap(),
+					field["type"].as_str().unwrap(),
+				)
+			})
+			.collect();
+
+		assert!(fields.contains(&("account", "address")));
+		assert!(fields.contains(&("role", "string")));
+		assert!(fields.contains(&("nonce", "uint256")));
+		assert!(fields.contains(&("deadline", "uint256")));
+	}
+
+	#[test]
 	fn test_admin_eip712_types_update_fee_config_fields() {
 		let types = admin_eip712_types();
 		let fee_config = types["UpdateFeeConfig"]
@@ -1968,8 +2002,8 @@ mod tests {
 			.as_array()
 			.expect("should be an array");
 
-		// UpdateGasConfig should have 11 fields
-		assert_eq!(gas_config.len(), 11);
+		// UpdateGasConfig should have 19 fields
+		assert_eq!(gas_config.len(), 19);
 
 		let names: Vec<&str> = gas_config
 			.iter()
@@ -1977,13 +2011,21 @@ mod tests {
 			.collect();
 		assert!(names.contains(&"resourceLockOpen"));
 		assert!(names.contains(&"resourceLockFill"));
+		assert!(names.contains(&"resourceLockPostFill"));
+		assert!(names.contains(&"resourceLockPreClaim"));
 		assert!(names.contains(&"resourceLockClaim"));
 		assert!(names.contains(&"permit2EscrowOpen"));
 		assert!(names.contains(&"permit2EscrowFill"));
+		assert!(names.contains(&"permit2EscrowPostFill"));
+		assert!(names.contains(&"permit2EscrowPreClaim"));
 		assert!(names.contains(&"permit2EscrowClaim"));
 		assert!(names.contains(&"eip3009EscrowOpen"));
 		assert!(names.contains(&"eip3009EscrowFill"));
+		assert!(names.contains(&"eip3009EscrowPostFill"));
+		assert!(names.contains(&"eip3009EscrowPreClaim"));
 		assert!(names.contains(&"eip3009EscrowClaim"));
+		assert!(names.contains(&"livePostFillEstimateChainIds"));
+		assert!(names.contains(&"liveFillEstimateEnabled"));
 		assert!(names.contains(&"nonce"));
 		assert!(names.contains(&"deadline"));
 	}

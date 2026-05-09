@@ -1,6 +1,6 @@
 //! Types for the admin API request/response payloads.
 
-use crate::networks::NetworkType;
+use crate::{auth::AdminRole, networks::NetworkType};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -27,8 +27,16 @@ pub struct AdminActionResponse {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminWhitelistResponse {
-	pub admins: Vec<String>,
+	pub entries: Vec<AdminWhitelistEntry>,
 	pub count: usize,
+}
+
+/// Typed admin whitelist entry response.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminWhitelistEntry {
+	pub address: String,
+	pub role: AdminRole,
 }
 
 /// Response for balances across networks.
@@ -75,6 +83,8 @@ pub struct GasConfigResponse {
 pub struct GasFlowResponse {
 	pub open: u64,
 	pub fill: u64,
+	pub post_fill: u64,
+	pub pre_claim: u64,
 	pub claim: u64,
 }
 
