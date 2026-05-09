@@ -25,11 +25,14 @@
 //! config_store.update(config, version).await?;
 //! ```
 
-use crate::networks::NetworkType;
+use crate::{
+	auth::{normalize_admin_whitelist, upsert_admin_role, AdminRole, AdminWhitelistEntry},
+	networks::NetworkType,
+};
 use alloy_primitives::{Address, B256};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Complete operator configuration stored in Redis.
 ///
@@ -75,6 +78,12 @@ pub struct OperatorConfig {
 	/// If None, rebalancing is disabled.
 	#[serde(default)]
 	pub rebalance: Option<OperatorRebalanceConfig>,
+
+	/// Optional per-chain fee-policy override. None = use auto-generated
+	/// defaults. Whatever fields/chains you specify here are merged on top of
+	/// the auto-generated delivery config.
+	#[serde(default)]
+	pub fee_policy: Option<crate::seed_overrides::FeePolicyOverride>,
 }
 
 /// Account configuration for signing backends.
@@ -436,6 +445,14 @@ fn default_broadcaster_finality_blocks() -> u64 {
 	20
 }
 
+fn default_live_fill_estimate_enabled() -> bool {
+	true
+}
+
+fn default_live_post_fill_estimate_chain_ids() -> HashSet<u64> {
+	HashSet::new() // empty = disabled everywhere; opt-in per-chain
+}
+
 /// Gas estimation settings per flow type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperatorGasConfig {
@@ -447,6 +464,24 @@ pub struct OperatorGasConfig {
 
 	/// Gas units for EIP-3009 escrow flow.
 	pub eip3009_escrow: OperatorGasFlowUnits,
+
+	/// When true, quote-time pricing performs `eth_estimateGas` for the fill
+	/// leg and uses the result instead of the configured per-flow `fill` units.
+	/// Other legs (open/claim) stay static. Defaults to `true`.
+	#[serde(default = "default_live_fill_estimate_enabled")]
+	pub live_fill_estimate_enabled: bool,
+
+	/// Set of chain IDs on which quote-time post-fill gas estimation
+	/// uses the stateOverride-based live path. Empty (default) = disabled
+	/// on all chains. Operators add chain IDs after validating the
+	/// OutputSettler's storage layout via the integration test.
+	///
+	/// Per-chain rather than global because the storage-layout
+	/// assumption is per-chain (different OutputSettler deployments
+	/// may have different impl versions or even different contract
+	/// shapes per chain).
+	#[serde(default = "default_live_post_fill_estimate_chain_ids")]
+	pub live_post_fill_estimate_chain_ids: HashSet<u64>,
 }
 
 /// Gas units for each step in an order flow.
@@ -457,6 +492,14 @@ pub struct OperatorGasFlowUnits {
 
 	/// Gas units for fill step.
 	pub fill: u64,
+
+	/// Gas units for post-fill settlement step.
+	#[serde(default)]
+	pub post_fill: u64,
+
+	/// Gas units for pre-claim settlement step.
+	#[serde(default)]
+	pub pre_claim: u64,
 
 	/// Gas units for claim/finalize step.
 	pub claim: u64,
@@ -539,8 +582,9 @@ pub struct OperatorAdminConfig {
 	/// Nonce TTL in seconds.
 	pub nonce_ttl_seconds: u64,
 
-	/// Authorized admin wallet addresses.
-	pub admin_addresses: Vec<Address>,
+	/// Typed admin whitelist entries.
+	#[serde(default)]
+	pub whitelist: Vec<AdminWhitelistEntry>,
 
 	/// Withdrawal policy for admin-initiated transfers.
 	#[serde(default)]
@@ -669,7 +713,7 @@ impl OperatorConfig {
 
 	/// Check if an address is an authorized admin.
 	pub fn is_admin(&self, address: &Address) -> bool {
-		self.admin.enabled && self.admin.admin_addresses.contains(address)
+		self.admin.is_authorized(address)
 	}
 }
 
@@ -703,23 +747,76 @@ impl OperatorNetworkConfig {
 impl OperatorAdminConfig {
 	/// Check if admin authentication is enabled and address is authorized.
 	pub fn is_authorized(&self, address: &Address) -> bool {
-		self.enabled && self.admin_addresses.contains(address)
+		self.enabled && self.role_for(address) == Some(AdminRole::Admin)
+	}
+
+	/// Resolve an address to an admin role.
+	pub fn role_for(&self, address: &Address) -> Option<AdminRole> {
+		self.whitelist
+			.iter()
+			.find(|entry| entry.address == *address)
+			.map(|entry| entry.role)
+	}
+
+	/// Return full-admin addresses derived from the typed whitelist.
+	pub fn admin_addresses(&self) -> Vec<Address> {
+		self.whitelist
+			.iter()
+			.filter(|entry| entry.role == AdminRole::Admin)
+			.map(|entry| entry.address)
+			.collect()
+	}
+
+	/// Return normalized typed whitelist entries from legacy + typed sources.
+	pub fn normalize_whitelist(
+		admin_addresses: &[Address],
+		whitelist: &[AdminWhitelistEntry],
+	) -> Vec<AdminWhitelistEntry> {
+		normalize_admin_whitelist(admin_addresses, whitelist)
 	}
 
 	/// Add an admin address.
 	pub fn add_admin(&mut self, address: Address) -> bool {
-		if self.admin_addresses.contains(&address) {
+		if self.role_for(&address) == Some(AdminRole::Admin) {
 			false
 		} else {
-			self.admin_addresses.push(address);
+			upsert_admin_role(&mut self.whitelist, address, AdminRole::Admin);
+			true
+		}
+	}
+
+	/// Set a wallet role in the typed whitelist.
+	///
+	/// Unlike `upsert_admin_role` (which preserves admin-wins semantics for
+	/// config-load merges), this performs a faithful assignment: an explicit
+	/// admin action may demote Admin → ReadOnly. Returns true if the stored
+	/// role changed.
+	pub fn set_role(&mut self, address: Address, role: AdminRole) -> bool {
+		if let Some(entry) = self
+			.whitelist
+			.iter_mut()
+			.find(|entry| entry.address == address)
+		{
+			if entry.role == role {
+				false
+			} else {
+				entry.role = role;
+				true
+			}
+		} else {
+			self.whitelist.push(AdminWhitelistEntry { address, role });
 			true
 		}
 	}
 
 	/// Remove an admin address.
 	pub fn remove_admin(&mut self, address: &Address) -> bool {
-		if let Some(pos) = self.admin_addresses.iter().position(|a| a == address) {
-			self.admin_addresses.remove(pos);
+		if let Some(pos) = self
+			.whitelist
+			.iter()
+			.position(|entry| &entry.address == address)
+		{
+			self.whitelist.remove(pos);
 			true
 		} else {
 			false
@@ -734,7 +831,7 @@ impl Default for OperatorAdminConfig {
 			domain: String::new(),
 			chain_id: 1,
 			nonce_ttl_seconds: 300,
-			admin_addresses: Vec::new(),
+			whitelist: Vec::new(),
 			withdrawals: OperatorWithdrawalsConfig::default(),
 		}
 	}
@@ -778,7 +875,10 @@ mod tests {
 			domain: "test.example.com".to_string(),
 			chain_id: 1,
 			nonce_ttl_seconds: 300,
-			admin_addresses: vec![test_address()],
+			whitelist: vec![AdminWhitelistEntry {
+				address: test_address(),
+				role: AdminRole::Admin,
+			}],
 			withdrawals: OperatorWithdrawalsConfig::default(),
 		};
 
@@ -912,10 +1012,14 @@ mod tests {
 				resource_lock: OperatorGasFlowUnits {
 					open: 0,
 					fill: 77298,
+					post_fill: 300_000,
+					pre_claim: 0,
 					claim: 122793,
 				},
 				permit2_escrow: OperatorGasFlowUnits::default(),
 				eip3009_escrow: OperatorGasFlowUnits::default(),
+				live_fill_estimate_enabled: true,
+				live_post_fill_estimate_chain_ids: HashSet::new(),
 			},
 			pricing: OperatorPricingConfig {
 				primary: "coingecko".to_string(),
@@ -936,12 +1040,16 @@ mod tests {
 				domain: "test.example.com".to_string(),
 				chain_id: 1,
 				nonce_ttl_seconds: 300,
-				admin_addresses: vec![test_address()],
+				whitelist: vec![AdminWhitelistEntry {
+					address: test_address(),
+					role: AdminRole::Admin,
+				}],
 				withdrawals: OperatorWithdrawalsConfig::default(),
 			},
 			auth_enabled: false,
 			account: None,
 			rebalance: None,
+			fee_policy: None,
 		};
 
 		let json = serde_json::to_string_pretty(&config).unwrap();
@@ -951,7 +1059,7 @@ mod tests {
 		assert_eq!(parsed.solver_name, Some("Test Solver".to_string()));
 		assert_eq!(parsed.networks.len(), 1);
 		assert!(parsed.networks.contains_key(&10));
-		assert_eq!(parsed.admin.admin_addresses.len(), 1);
+		assert_eq!(parsed.admin.admin_addresses().len(), 1);
 		assert_eq!(parsed.gas.resource_lock.fill, 77298);
 		assert_eq!(
 			parsed.settlement.settlement_type,
@@ -1020,7 +1128,7 @@ mod tests {
 				"domain": "",
 				"chain_id": 1,
 				"nonce_ttl_seconds": 300,
-				"admin_addresses": [],
+				"whitelist": [],
 				"withdrawals": {"enabled": false}
 			},
 			"account": null

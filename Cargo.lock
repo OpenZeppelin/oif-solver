@@ -5054,12 +5054,14 @@ dependencies = [
  "lru 0.16.1",
  "mockall",
  "once_cell",
+ "proptest",
  "rust_decimal",
  "serde",
  "serde_json",
  "solver-account",
  "solver-bridge",
  "solver-config",
+ "solver-core",
  "solver-delivery",
  "solver-discovery",
  "solver-order",
@@ -5091,6 +5093,7 @@ dependencies = [
  "async-trait",
  "hex",
  "mockall",
+ "proptest",
  "reqwest",
  "serde",
  "serde_json",
@@ -5180,6 +5183,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "solver-e2e-tests"
+version = "0.1.0"
+dependencies = [
+ "alloy-contract",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rpc-types",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "anyhow",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solver-types",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "solver-order"
 version = "0.1.0"
 dependencies = [
@@ -5222,6 +5249,7 @@ name = "solver-service"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "alloy-rpc-types",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",

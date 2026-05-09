@@ -155,11 +155,13 @@ paths:
     get:
       summary: Get operator configuration (redacted)
       description: |
-        Returns a redacted view of the current operator configuration.
+        Returns a redacted view of the current operator configuration. Requires
+        `admin-read` or `admin-all` scope.
       operationId: getAdminConfig
       tags:
         - Admin
-      security: []
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Current operator configuration
@@ -178,7 +180,8 @@ paths:
     get:
       summary: Get admin whitelist
       description: |
-        Returns the configured list of admin wallet addresses.
+        Returns the configured typed admin whitelist. Requires `admin-read` or
+        `admin-all` scope.
       operationId: getAdminWhitelist
       tags:
         - Admin
@@ -192,9 +195,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminWhitelistResponse"
               example:
-                admins:
-                  - "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
-                  - "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+                entries:
+                  - address: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+                    role: "admin"
+                  - address: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+                    role: "read-only"
                 count: 2
         "401":
           description: Unauthorized (JWT failure)
@@ -215,11 +220,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminAuthErrorResponse"
     post:
-      summary: Add an admin
+      summary: Set admin whitelist role
       description: |
-        Adds a new admin address to the authorized list.
-        Requires an EIP-712 signed request body.
-      operationId: addAdmin
+        Adds or updates a wallet in the typed admin whitelist. Requires an
+        EIP-712 signed request body from an `admin-all` signer.
+      operationId: setAdminRole
       tags:
         - Admin
       security:
@@ -229,16 +234,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SignedAdminRequestAddAdmin"
+              $ref: "#/components/schemas/SignedAdminRequestSetAdminRole"
             example:
               signature: "0x..."
               contents:
-                newAdmin: "0x1234567890abcdef1234567890abcdef12345678"
+                account: "0x1234567890abcdef1234567890abcdef12345678"
+                role: "read-only"
                 nonce: "12345678901234"
                 deadline: "1706184000"
       responses:
         "200":
-          description: Admin added
+          description: Whitelist role set
           content:
             application/json:
               schema:
@@ -694,13 +700,21 @@ paths:
               contents:
                 resourceLockOpen: 50000
                 resourceLockFill: 150000
+                resourceLockPostFill: 300000
+                resourceLockPreClaim: 0
                 resourceLockClaim: 80000
                 permit2EscrowOpen: 60000
                 permit2EscrowFill: 160000
+                permit2EscrowPostFill: 300000
+                permit2EscrowPreClaim: 0
                 permit2EscrowClaim: 90000
                 eip3009EscrowOpen: 55000
                 eip3009EscrowFill: 155000
+                eip3009EscrowPostFill: 300000
+                eip3009EscrowPreClaim: 0
                 eip3009EscrowClaim: 85000
+                livePostFillEstimateChainIds: [1, 747474]
+                liveFillEstimateEnabled: true
                 nonce: "12345678901234"
                 deadline: "1706184000"
       responses:
@@ -849,22 +863,40 @@ components:
     AdminWhitelistResponse:
       type: object
       required:
-        - admins
+        - entries
         - count
       properties:
-        admins:
+        entries:
           type: array
-          description: Configured admin wallet addresses
+          description: Configured admin wallet addresses and roles
           items:
-            type: string
-            pattern: "^0x[a-fA-F0-9]{40}$"
+            $ref: "#/components/schemas/AdminWhitelistEntry"
           example:
-            - "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
-            - "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+            - address: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+              role: "admin"
+            - address: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+              role: "read-only"
         count:
           type: integer
-          description: Number of configured admin wallet addresses
+          description: Number of configured whitelist entries
           example: 2
+
+    AdminWhitelistEntry:
+      type: object
+      required:
+        - address
+        - role
+      properties:
+        address:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          example: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        role:
+          type: string
+          enum:
+            - admin
+            - read-only
+          example: "read-only"
 
     SignedAdminRequestAddToken:
       type: object
@@ -892,7 +924,7 @@ components:
         contents:
           $ref: "#/components/schemas/AddTokensContents"
 
-    SignedAdminRequestAddAdmin:
+    SignedAdminRequestSetAdminRole:
       type: object
       required:
         - signature
@@ -903,19 +935,26 @@ components:
           description: Hex-encoded EIP-712 signature (65 bytes)
           pattern: "^0x[a-fA-F0-9]+$"
         contents:
-          $ref: "#/components/schemas/AddAdminContents"
+          $ref: "#/components/schemas/SetAdminRoleContents"
 
-    AddAdminContents:
+    SetAdminRoleContents:
       type: object
       required:
-        - newAdmin
+        - account
+        - role
         - nonce
         - deadline
       properties:
-        newAdmin:
+        account:
           type: string
           pattern: "^0x[a-fA-F0-9]{40}$"
           example: "0x1234567890abcdef1234567890abcdef12345678"
+        role:
+          type: string
+          enum:
+            - admin
+            - read-only
+          example: "read-only"
         nonce:
           type: string
           description: Nonce as a string (number also accepted by server)
@@ -1378,6 +1417,8 @@ components:
       required:
         - open
         - fill
+        - postFill
+        - preClaim
         - claim
       properties:
         open:
@@ -1388,6 +1429,19 @@ components:
           type: integer
           format: int64
           example: 150000
+        postFill:
+          type: integer
+          format: int64
+          description: |
+            Gas units for the post-fill settlement step (e.g. Hyperlane oracle dispatch).
+          example: 300000
+        preClaim:
+          type: integer
+          format: int64
+          description: |
+            Gas units for the pre-claim settlement step. May be 0 for routes that don't
+            require a separate pre-claim transaction (e.g. direct settlement).
+          example: 0
         claim:
           type: integer
           format: int64
@@ -1411,12 +1465,18 @@ components:
       required:
         - resourceLockOpen
         - resourceLockFill
+        - resourceLockPostFill
+        - resourceLockPreClaim
         - resourceLockClaim
         - permit2EscrowOpen
         - permit2EscrowFill
+        - permit2EscrowPostFill
+        - permit2EscrowPreClaim
         - permit2EscrowClaim
         - eip3009EscrowOpen
         - eip3009EscrowFill
+        - eip3009EscrowPostFill
+        - eip3009EscrowPreClaim
         - eip3009EscrowClaim
         - nonce
         - deadline
@@ -1429,6 +1489,14 @@ components:
           type: integer
           format: int64
           example: 150000
+        resourceLockPostFill:
+          type: integer
+          format: int64
+          example: 300000
+        resourceLockPreClaim:
+          type: integer
+          format: int64
+          example: 0
         resourceLockClaim:
           type: integer
           format: int64
@@ -1441,6 +1509,14 @@ components:
           type: integer
           format: int64
           example: 160000
+        permit2EscrowPostFill:
+          type: integer
+          format: int64
+          example: 300000
+        permit2EscrowPreClaim:
+          type: integer
+          format: int64
+          example: 0
         permit2EscrowClaim:
           type: integer
           format: int64
@@ -1453,10 +1529,38 @@ components:
           type: integer
           format: int64
           example: 155000
+        eip3009EscrowPostFill:
+          type: integer
+          format: int64
+          example: 300000
+        eip3009EscrowPreClaim:
+          type: integer
+          format: int64
+          example: 0
         eip3009EscrowClaim:
           type: integer
           format: int64
           example: 85000
+        livePostFillEstimateChainIds:
+          type: array
+          description: |
+            Chain ids that opt-in to live post-fill gas estimation via stateOverride
+            at quote time. Optional; defaults to the solver's seed config when omitted.
+            The server sorts the list ascending before EIP-712 hashing, so the signed
+            payload is order-independent — but the signed value MUST match what was
+            sent (don't sort client-side after signing).
+          items:
+            type: integer
+            format: int64
+          example: [1, 747474]
+        liveFillEstimateEnabled:
+          type: boolean
+          description: |
+            Master switch for live fill-leg gas estimation at quote time. When true,
+            quotes use `eth_estimateGas` for the fill transaction; when false, quotes
+            use the static `*Fill` values configured above. Optional; defaults to
+            `true` when omitted from the signed payload.
+          example: true
         nonce:
           type: string
           description: Nonce as a string (number also accepted by server)

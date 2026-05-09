@@ -54,7 +54,9 @@ pub mod pricing;
 pub use account::*;
 pub use admin_api::*;
 pub use api::*;
-pub use auth::{AdminConfig, AuthConfig, AuthScope, JwtClaims, RefreshTokenData};
+pub use auth::{
+	AdminConfig, AdminRole, AdminWhitelistEntry, AuthConfig, AuthScope, JwtClaims, RefreshTokenData,
+};
 pub use costs::{CostBreakdown, CostContext};
 pub use delivery::*;
 pub use discovery::*;
@@ -79,9 +81,9 @@ pub use registry::ImplementationRegistry;
 pub use secret_string::SecretString;
 pub use seed_overrides::{AccountOverride, NetworkOverride, SeedOverrides, Token};
 pub use seed_overrides::{
-	BroadcasterSettlementOverride, DirectSettlementOverride, HyperlaneSettlementOverride,
-	OracleOverrides, OracleSelectionStrategyOverride, RoutingDefaults, SettlementOverride,
-	SettlementTypeOverride,
+	BroadcasterSettlementOverride, DirectSettlementOverride, FeePolicyChainOverride,
+	FeePolicyOverride, HyperlaneSettlementOverride, OracleOverrides,
+	OracleSelectionStrategyOverride, RoutingDefaults, SettlementOverride, SettlementTypeOverride,
 };
 pub use standards::{
 	eip7683::{Eip7683OrderData, MandateOutput as Eip7683Output},
